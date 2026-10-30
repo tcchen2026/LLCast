@@ -1,0 +1,115 @@
+# The Windows sender, cross-built on Linux with mingw: LLCast-Windows-x64.zip,
+# containing LLCast.exe, LICENSE and NOTICE. The version's release tag comes
+# from tools/current-tree-version.sh; its download name stays the same.
+# Run by hand (Actions > Windows), or by release.yml with the other systems.
+# With smoke ticked, Wine must show the window in xvfb; a screenshot is kept.
+# Running again on the same commit replaces this release's zip.
+name: Windows
+
+on:
+  workflow_dispatch:
+    inputs:
+      prerelease:
+        description: Mark a new release as a pre-release
+        type: boolean
+        default: false
+      smoke:
+        description: Open the window under Wine and keep a screenshot
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      prerelease:
+        type: boolean
+        default: false
+      smoke:
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write # create the release/tag or replace its Windows file
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake zip \
+            g++-mingw-w64-x86-64-posix gcc-mingw-w64-x86-64-posix binutils-mingw-w64-x86-64
+      - name: Build
+        id: build
+        run: |
+          cmake -S . -B build/mingw -DCMAKE_TOOLCHAIN_FILE="$PWD/cmake/mingw-w64.cmake" -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/mingw -j4 --target LLCast llstream_win llstream_clock
+          echo "version=$(tools/current-tree-version.sh)" >> "$GITHUB_OUTPUT"
+      - name: Check imports (static runtime, NVENC loaded at run time)
+        run: |
+          for exe in LLCast llstream_win; do
+            imports=$(x86_64-w64-mingw32-objdump -p "build/mingw/$exe.exe" | awk '/DLL Name/ {print $3}')
+            echo "$exe: $imports"
+            if grep -qiE 'libgcc|libstdc|winpthread|nvencodeapi|mfplat' <<<"$imports"; then
+              echo "::error::$exe imports a forbidden runtime or NVENC DLL"
+              exit 1
+            fi
+          done
+      - name: Smoke
+        if: inputs.smoke
+        env:
+          WINEPREFIX: ${{ runner.temp }}/llcast-wine
+          WINEDEBUG: '-all'
+          SHOT_DIR: ${{ runner.temp }}/llcast-windows-smoke
+        run: |
+          sudo apt-get install -y --no-install-recommends wine wine64 xvfb xauth xdotool imagemagick
+          mkdir -p "$SHOT_DIR"
+          xvfb-run -a -s '-screen 0 1280x800x24' bash <<'SMOKE'
+          set -euo pipefail
+          wine build/mingw/LLCast.exe > "$SHOT_DIR/app.log" 2>&1 &
+          app_pid=$!
+          trap 'kill "$app_pid" 2>/dev/null || true; wineserver -k 2>/dev/null || true' EXIT
+          window=""
+          for ((attempt=0; attempt<60; attempt++)); do
+            window=$(xdotool search --onlyvisible --name '^LLCast$' | head -1 || true)
+            [ -z "$window" ] || break
+            kill -0 "$app_pid" 2>/dev/null || break
+            sleep 1
+          done
+          [ -n "$window" ] || { cat "$SHOT_DIR/app.log"; echo '::error::LLCast window did not appear'; exit 1; }
+          import -window "$window" "$SHOT_DIR/LLCast.png"
+          SMOKE
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always() && inputs.smoke
+        with:
+          name: LLCast-Windows-smoke
+          path: ${{ runner.temp }}/llcast-windows-smoke/
+          if-no-files-found: warn
+      - name: Package
+        run: |
+          mkdir -p dist
+          zip -j dist/LLCast-Windows-x64.zip build/mingw/LLCast.exe LICENSE NOTICE
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: LLCast-Windows-x64
+          path: dist/LLCast-Windows-x64.zip
+          if-no-files-found: error
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.build.outputs.version }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          file=dist/LLCast-Windows-x64.zip
+          if gh release view "$VERSION" > /dev/null 2>&1; then
+            gh release upload "$VERSION" "$file" --clobber
+          else
+            flags=()
+            [ "$PRERELEASE" != true ] || flags+=(--prerelease)
+            gh release create "$VERSION" "$file" --target "$GITHUB_SHA" --title "LLCast $VERSION" \
+              "${flags[@]}" --notes-file docs/release-notes.md
+          fi

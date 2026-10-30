@@ -1,0 +1,7 @@
+refs/
+/build/
+/private/
+__pycache__/
+*.pyc
+AGENTS.md
+private_docs/

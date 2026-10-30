@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleDisplayName</key>
+    <string>LLCast</string>
+    <key>CFBundleExecutable</key>
+    <string>LLCast</string>
+    <key>CFBundleIconFile</key>
+    <string>LLCast</string>
+    <key>CFBundleIdentifier</key>
+    <string>@LLCAST_BUNDLE_ID@</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>LLCast</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>@LLCAST_VERSION@</string>
+    <key>CFBundleVersion</key>
+    <string>@LLCAST_BUILD@</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <!-- The games category lets macOS turn on Game Mode while receiving full screen. -->
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.games</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSHumanReadableCopyright</key>
+    <string>Apache License 2.0</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>LLCast sends and receives video with devices on your local network.</string>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>LLCast streams your screen to the receiver you choose.</string>
+</dict>
+</plist>

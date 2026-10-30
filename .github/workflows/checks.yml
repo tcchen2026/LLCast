@@ -1,0 +1,67 @@
+# Automatic checks stay on Linux: the host tests, mingw imports and a
+# development-signed APK. No signing secrets, release writes or artifacts.
+# The platform workflows are manual/reusable release builders instead.
+name: Checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake build-essential libdrm-dev ffmpeg zip meson ninja-build \
+            g++-mingw-w64-x86-64-posix gcc-mingw-w64-x86-64-posix binutils-mingw-w64-x86-64
+      # CMake enables six replay/dump tests only when these local fixtures exist.
+      # Generate both on the runner; no box or checked-in video is needed.
+      - name: HEVC test fixtures
+        run: |
+          mkdir -p build/assets
+          for interval in 180 60; do
+            suffix=""
+            if [ "$interval" = 60 ]; then suffix=-idr; fi
+            ffmpeg -hide_banner -loglevel warning -y -f lavfi -i testsrc2=size=1920x1080:rate=60 \
+              -frames:v 180 -an -pix_fmt yuv420p -c:v libx265 -preset ultrafast -tune zerolatency -crf 23 \
+              -x265-params "bframes=0:rc-lookahead=0:repeat-headers=1:aud=1:open-gop=0:keyint=$interval:min-keyint=$interval:scenecut=0:pools=2:frame-threads=1:log-level=error" \
+              -f hevc "build/assets/testsrc2-1920x1080-60fps-180frames$suffix.hevc"
+          done
+      - name: Host build and tests
+        run: |
+          cmake -S . -B build/host -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/host -j4
+          ctest --test-dir build/host --output-on-failure
+      - name: Windows build and imports
+        run: |
+          cmake -S . -B build/mingw -DCMAKE_TOOLCHAIN_FILE="$PWD/cmake/mingw-w64.cmake" -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/mingw -j4 --target LLCast llstream_win llstream_clock
+          for exe in LLCast llstream_win; do
+            imports=$(x86_64-w64-mingw32-objdump -p "build/mingw/$exe.exe" | awk '/DLL Name/ {print $3}')
+            echo "$exe: $imports"
+            if grep -qiE 'libgcc|libstdc|winpthread|nvencodeapi|mfplat' <<<"$imports"; then
+              echo "::error::$exe imports a forbidden runtime or NVENC DLL"
+              exit 1
+            fi
+          done
+      - name: Development APK
+        run: python3 tools/build_apk.py --ci
+      - name: APK and display prechecks (no hardware)
+        run: |
+          python3 tests/test_apk.py
+          cc -std=c11 -Wall -Wextra -Werror -Ithird_party/libdrm/include -I/usr/include/libdrm \
+            tests/test_drm_precheck.c -o build/host/test_drm_precheck
+          build/host/test_drm_precheck

@@ -1,0 +1,161 @@
+# The universal macOS 14+ app, built once on macos-15. A Developer ID produces
+# LLCast-macOS.dmg, signed, notarized and stapled, in the commit's release.
+# Without the release environment's signing material, keep an ad-hoc zip
+# artifact only. Every build runs the hardware HEVC self-test (77 = unavailable).
+# Run by hand or through release.yml; smoke also opens the Send/Receive chooser
+# and keeps a screenshot. Running again on the same commit replaces its DMG.
+name: macOS
+
+on:
+  workflow_dispatch:
+    inputs:
+      prerelease:
+        description: Mark a new release as a pre-release
+        type: boolean
+        default: false
+      smoke:
+        description: Open the Send/Receive chooser and keep a screenshot
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      prerelease:
+        type: boolean
+        default: false
+      smoke:
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: macos-15
+    environment: release
+    permissions:
+      contents: write # only the signed, notarized DMG reaches GitHub Releases
+    env:
+      HAVE_DEVELOPER_ID: ${{ secrets.MACOS_DEVELOPER_ID_P12 != '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Tools
+        run: command -v cmake >/dev/null || brew install cmake
+      # A keychain owned by this run, and a private API-key file for notarytool.
+      - name: Signing material
+        if: env.HAVE_DEVELOPER_ID == 'true'
+        env:
+          DEVELOPER_ID_P12: ${{ secrets.MACOS_DEVELOPER_ID_P12 }}
+          DEVELOPER_ID_PASSWORD: ${{ secrets.MACOS_DEVELOPER_ID_PASSWORD }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          for need in ASC_KEY_ID ASC_KEY_P8 ASC_ISSUER_ID; do
+            [ -n "${!need}" ] || { echo "::error::$need is missing from the release environment"; exit 1; }
+          done
+          umask 077
+          keychain="$RUNNER_TEMP/llcast-signing.keychain-db"
+          pass=$(openssl rand -hex 24)
+          security create-keychain -p "$pass" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$pass" "$keychain"
+          printf '%s' "$DEVELOPER_ID_P12" | base64 --decode > "$RUNNER_TEMP/llcast-cert.p12"
+          security import "$RUNNER_TEMP/llcast-cert.p12" -k "$keychain" -P "$DEVELOPER_ID_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/llcast-cert.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$pass" "$keychain" > /dev/null
+          security list-keychains -d user | sed 's/^ *"//;s/"$//' > "$RUNNER_TEMP/llcast-keychains.txt"
+          keychains=()
+          while IFS= read -r entry; do keychains+=("$entry"); done < "$RUNNER_TEMP/llcast-keychains.txt"
+          security list-keychains -d user -s "$keychain" "${keychains[@]}"
+          identity=$(security find-identity -v -p codesigning "$keychain" | sed -n 's/.*"\(Developer ID Application: .*\)"/\1/p' | head -1)
+          [ -n "$identity" ] || { echo '::error::The certificate has no Developer ID Application identity'; exit 1; }
+          echo "MACOS_DEVELOPER_ID=$identity" >> "$GITHUB_ENV"
+          printf '%s' "$ASC_KEY_P8" > "$RUNNER_TEMP/llcast-notary.p8"
+          echo "ASC_KEY_PATH=$RUNNER_TEMP/llcast-notary.p8" >> "$GITHUB_ENV"
+      - name: Build and self-test
+        id: build
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          if [ "$HAVE_DEVELOPER_ID" = true ]; then
+            tools/macos/build.sh --test --build-dmg
+          else
+            tools/macos/build.sh --test
+          fi
+          echo "version=$(tools/current-tree-version.sh)" >> "$GITHUB_OUTPUT"
+      - name: Smoke
+        if: inputs.smoke
+        run: |
+          app="$PWD/build/macos/dist/LLCast.app"
+          out="$RUNNER_TEMP/llcast-macos-smoke"
+          mkdir -p "$out"
+          trap 'osascript -e '\''quit app "LLCast"'\'' >/dev/null 2>&1 || true' EXIT
+          open -n --stdout "$out/stdout.log" --stderr "$out/stderr.log" "$app"
+          for ((attempt=0; attempt<30; attempt++)); do
+            pgrep -x LLCast >/dev/null && break
+            sleep 1
+          done
+          pgrep -x LLCast >/dev/null || { echo '::error::LLCast did not start'; exit 1; }
+          sleep 5
+          pgrep -x LLCast >/dev/null || { cat "$out/stderr.log"; exit 1; }
+          screencapture -x "$out/LLCast-chooser.png"
+          osascript -e 'quit app "LLCast"'
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always() && inputs.smoke
+        with:
+          name: LLCast-macOS-smoke
+          path: ${{ runner.temp }}/llcast-macos-smoke/
+          if-no-files-found: warn
+      # Ad-hoc builds are useful for testing but cannot stand in for the DMG.
+      - name: Ad-hoc app
+        if: env.HAVE_DEVELOPER_ID != 'true'
+        run: |
+          echo '::notice::No MACOS_DEVELOPER_ID_P12 in the release environment. Keeping an ad-hoc app artifact; no DMG release.'
+          ditto -c -k --keepParent build/macos/dist/LLCast.app "$RUNNER_TEMP/LLCast-macOS-unsigned.zip"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: env.HAVE_DEVELOPER_ID != 'true'
+        with:
+          name: LLCast-macOS-unsigned
+          path: ${{ runner.temp }}/LLCast-macOS-unsigned.zip
+          if-no-files-found: error
+      - name: Package release
+        if: env.HAVE_DEVELOPER_ID == 'true'
+        run: |
+          mkdir -p dist
+          cp build/macos/dist/LLCast.dmg dist/LLCast-macOS.dmg
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: env.HAVE_DEVELOPER_ID == 'true'
+        with:
+          name: LLCast-macOS
+          path: dist/LLCast-macOS.dmg
+          if-no-files-found: error
+      - name: Release
+        if: env.HAVE_DEVELOPER_ID == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.build.outputs.version }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          file=dist/LLCast-macOS.dmg
+          if gh release view "$VERSION" > /dev/null 2>&1; then
+            gh release upload "$VERSION" "$file" --clobber
+          else
+            flags=()
+            [ "$PRERELEASE" != true ] || flags+=(--prerelease)
+            gh release create "$VERSION" "$file" --target "$GITHUB_SHA" --title "LLCast $VERSION" \
+              "${flags[@]}" --notes-file docs/release-notes.md
+          fi
+      - name: Remove signing material
+        if: always() && env.HAVE_DEVELOPER_ID == 'true'
+        run: |
+          if [ -f "$RUNNER_TEMP/llcast-keychains.txt" ]; then
+            keychains=()
+            while IFS= read -r entry; do keychains+=("$entry"); done < "$RUNNER_TEMP/llcast-keychains.txt"
+            security list-keychains -d user -s "${keychains[@]}" || true
+          fi
+          security delete-keychain "$RUNNER_TEMP/llcast-signing.keychain-db" || true
+          rm -f "$RUNNER_TEMP/llcast-cert.p12" "$RUNNER_TEMP/llcast-notary.p8"

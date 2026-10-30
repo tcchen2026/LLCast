@@ -1,0 +1,11 @@
+LLCast
+Copyright 2026 the LLCast authors
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+third_party/ holds unmodified headers under their own licenses:
+- libdrm headers: MIT (third_party/libdrm)
+- Rockchip MPP headers: Apache-2.0 and MIT (third_party/mpp)
+- nv-codec-headers (NVIDIA Video Codec SDK API): MIT (third_party/nv-codec-headers)
+
+refs/ for local, untracked reference only. For learning how API works only, never use code inside.

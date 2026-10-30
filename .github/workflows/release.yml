@@ -1,0 +1,101 @@
+# Every download in one manual run: draft the commit's release, then Windows,
+# Android and macOS in order, each adding its file; publish only with all three.
+# A failed build stops those after it and leaves the draft. Missing signing
+# material gives artifacts but no APK/DMG release asset, so the draft stays too.
+# Retry a platform's workflow on the same commit, then rerun this or publish
+# the completed draft by hand. Existing published releases keep their status.
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      prerelease:
+        description: Mark a new release as a pre-release
+        type: boolean
+        default: false
+      smoke:
+        description: Try the Windows and Mac windows, with screenshots
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  draft:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.draft.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Draft release
+        id: draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          version=$(tools/current-tree-version.sh)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if gh release view "$version" > /dev/null 2>&1; then
+            echo "The release $version exists: each platform replaces its own file"
+          else
+            flags=()
+            [ "$PRERELEASE" != true ] || flags+=(--prerelease)
+            gh release create "$version" --draft --target "$GITHUB_SHA" --title "LLCast $version" \
+              "${flags[@]}" --notes-file docs/release-notes.md
+          fi
+
+  windows:
+    needs: draft
+    permissions:
+      contents: write
+    uses: ./.github/workflows/windows.yml
+    with:
+      prerelease: ${{ inputs.prerelease }}
+      smoke: ${{ inputs.smoke }}
+
+  android:
+    needs: windows
+    permissions:
+      contents: write
+    uses: ./.github/workflows/android.yml
+    secrets: inherit
+    with:
+      prerelease: ${{ inputs.prerelease }}
+
+  macos:
+    needs: android
+    permissions:
+      contents: write
+    uses: ./.github/workflows/macos.yml
+    secrets: inherit
+    with:
+      prerelease: ${{ inputs.prerelease }}
+      smoke: ${{ inputs.smoke }}
+
+  publish:
+    needs: [draft, macos]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.draft.outputs.version }}
+        run: |
+          have=$(gh release view "$VERSION" --json assets --jq '.assets[].name')
+          missing=0
+          for file in LLCast-Windows-x64.zip LLCast-Android.apk LLCast-macOS.dmg; do
+            if ! grep -qxF "$file" <<<"$have"; then
+              echo "::error::$file is missing from $VERSION; the draft will not be published"
+              missing=1
+            fi
+          done
+          [ "$missing" = 0 ] || exit 1
+          gh release edit "$VERSION" --draft=false

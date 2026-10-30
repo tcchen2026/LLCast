@@ -1,0 +1,86 @@
+# The Android sender and receivers: LLCast-Android.apk, built on Linux without
+# Gradle. It joins the version's release with the Windows zip and Mac DMG.
+# Signing material belongs to the release environment (README, Releases).
+# Without the release keystore, keep a development-signed artifact only: a new
+# CI key cannot update an installed release. Run by hand or through release.yml.
+name: Android
+
+on:
+  workflow_dispatch:
+    inputs:
+      prerelease:
+        description: Mark a new release as a pre-release
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      prerelease:
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: write # only release-key APKs reach GitHub Releases
+    env:
+      HAVE_RELEASE_KEY: ${{ secrets.LLCAST_KEYSTORE_BASE64 != '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake build-essential zip meson ninja-build
+      # --ci reuses matching SDK packages and NDK r27d from ANDROID_HOME/ndk,
+      # or the checked, pinned fetch path when that version isn't installed.
+      - name: Build
+        id: build
+        env:
+          LLCAST_KEYSTORE_BASE64: ${{ secrets.LLCAST_KEYSTORE_BASE64 }}
+          LLCAST_STORE_PASSWORD: ${{ secrets.LLCAST_STORE_PASSWORD }}
+          LLCAST_KEY_PASSWORD: ${{ secrets.LLCAST_KEY_PASSWORD }}
+          LLCAST_KEY_ALIAS: ${{ secrets.LLCAST_KEY_ALIAS }}
+        run: |
+          python3 tools/build_apk.py --ci --output dist/LLCast-Android.apk
+          echo "version=$(tools/current-tree-version.sh)" >> "$GITHUB_OUTPUT"
+      - name: Development artifact only
+        if: env.HAVE_RELEASE_KEY != 'true'
+        run: echo '::notice::No LLCAST_KEYSTORE_BASE64 in the release environment. This APK uses a development key; it is an artifact only, not a release/update.'
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: LLCast-Android-${{ env.HAVE_RELEASE_KEY == 'true' && 'release' || 'development' }}
+          path: |
+            dist/LLCast-Android.apk
+            build/apk/build.json
+          if-no-files-found: error
+      - name: Release
+        if: env.HAVE_RELEASE_KEY == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.build.outputs.version }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          python3 -c 'import json; assert json.load(open("build/apk/build.json"))["signing"] == "release"'
+          file=dist/LLCast-Android.apk
+          if gh release view "$VERSION" > /dev/null 2>&1; then
+            gh release upload "$VERSION" "$file" --clobber
+          else
+            flags=()
+            [ "$PRERELEASE" != true ] || flags+=(--prerelease)
+            gh release create "$VERSION" "$file" --target "$GITHUB_SHA" --title "LLCast $VERSION" \
+              "${flags[@]}" --notes-file docs/release-notes.md
+          fi
+      - name: Remove the decoded keystore
+        if: always()
+        run: rm -f build/apk/signing/release.p12

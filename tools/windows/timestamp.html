@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LLStream timestamp test</title>
+<style>
+  :root { color-scheme: dark; background: #090d12; color: #eaf0f6; font-family: system-ui, sans-serif; }
+  body { margin: 0; }
+  canvas { display: block; }
+  nav { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 8px 16px; font-size: 13px; }
+  button { font: inherit; color: #fff; background: #1d344a; border: 1px solid #60758a; border-radius: 5px; padding: 7px 12px; cursor: pointer; }
+  button:focus-visible { outline: 2px solid #66e3ff; outline-offset: 2px; }
+  #hint { color: #a8b8c8; }
+</style>
+<canvas id="clock" aria-label="Live millisecond clock, elapsed counter and moving timing markers"></canvas>
+<nav>
+  <button id="fullscreen" type="button">Full screen (F)</button>
+  <span id="hint">Keep this page at the top-left of the PC display. F11 also works.</span>
+</nav>
+<script>
+"use strict";
+const canvas = document.getElementById("clock");
+const context = canvas.getContext("2d", { alpha: false });
+const W = 1800, H = 850, left = 64, right = W - 64;
+const origin = performance.now();
+let frames = 0, rateFrames = 0, rateStart = origin, rate = 0;
+
+function resize() {
+  // A 200% Windows desktop must still fit in the physical 1920x1080 crop.
+  const dpr = window.devicePixelRatio || 1;
+  const scale = Math.max(0.05, Math.min(1, innerWidth * dpr / W,
+    Math.max(1, innerHeight - 52) * dpr / H));
+  canvas.width = Math.round(W * scale);
+  canvas.height = Math.round(H * scale);
+  canvas.style.width = (canvas.width / dpr) + "px";
+  canvas.style.height = (canvas.height / dpr) + "px";
+  context.setTransform(scale, 0, 0, scale, 0, 0);
+}
+function text(value, x, y, size, color = "#ffffff") {
+  context.fillStyle = color;
+  context.font = `600 ${size}px Consolas, "Cascadia Mono", monospace`;
+  context.fillText(value, x, y);
+}
+function strip(y, cells, step, elapsed) {
+  const width = (right - left) / cells;
+  const lit = Math.floor(elapsed / step) % cells;
+  for (let i = 0; i < cells; ++i) {
+    context.fillStyle = i === lit ? "#66e3ff" : i % 10 === 0 ? "#395267" : "#1c2c3a";
+    context.fillRect(left + i * width + 1, y, width - 2, 48);
+  }
+}
+function draw() {
+  const now = performance.now();
+  const elapsed = Math.floor(now - origin);
+  const wall = new Date();
+  const two = value => String(value).padStart(2, "0");
+  const time = `${two(wall.getHours())}:${two(wall.getMinutes())}:${two(wall.getSeconds())}.` +
+    String(wall.getMilliseconds()).padStart(3, "0");
+  ++frames;
+  ++rateFrames;
+  if (now - rateStart >= 1000) {
+    rate = rateFrames * 1000 / (now - rateStart);
+    rateStart = now;
+    rateFrames = 0;
+  }
+  context.fillStyle = "#090d12";
+  context.fillRect(0, 0, W, H);
+  text("LLSTREAM  /  PC LOCAL TIME", left, 65, 30, "#a8b8c8");
+  text(time, left, 250, 180);
+  text("ELAPSED MILLISECONDS  /  MONOTONIC", left, 330, 30, "#a8b8c8");
+  text(String(elapsed).padStart(9, "0"), left, 485, 150, "#66e3ff");
+  text(`Browser frame ${frames}    ${rate ? rate.toFixed(1) : "--"} frames/s`, left, 545, 30, "#a8b8c8");
+  text("10 ms per cell  /  repeats each second", left, 600, 26, "#a8b8c8");
+  strip(615, 100, 10, elapsed);
+  text("100 ms per cell  /  repeats each second", left, 710, 26, "#a8b8c8");
+  strip(725, 10, 100, elapsed);
+  text("One photo, both screens: PC elapsed - projector elapsed = extra display delay.", left, 824, 26, "#a8b8c8");
+  requestAnimationFrame(draw);
+}
+async function fullscreen() {
+  try {
+    if (document.fullscreenElement) await document.exitFullscreen();
+    else await document.documentElement.requestFullscreen();
+  } catch (_) {
+    document.getElementById("hint").textContent = "Press F11 for browser full screen.";
+  }
+}
+document.getElementById("fullscreen").addEventListener("click", fullscreen);
+addEventListener("keydown", event => {
+  if (event.key.toLowerCase() === "f" && !event.ctrlKey && !event.altKey && !event.metaKey) {
+    event.preventDefault();
+    fullscreen();
+  }
+});
+addEventListener("resize", resize);
+document.addEventListener("fullscreenchange", resize);
+resize();
+requestAnimationFrame(draw);
+</script>
+</html>

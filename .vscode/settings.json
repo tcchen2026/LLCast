@@ -1,0 +1,4 @@
+{
+    // build/wine-*/dosdevices/z: links to /; following it scans the whole disk.
+    "search.followSymlinks": false
+}
